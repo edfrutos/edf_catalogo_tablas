@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Catálogo Tablas - Gestión de Productos</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+    <link rel="icon" href="{{ url_for('static', filename='favicon.ico') }}" />
+  </head>
+  <body>
+    <div class="container">
+      {% if session.get('usuario') %}
+      <div style="float: right">
+        <button type="button" class="btn-secondary mt-1" onclick="window.location.href='/logout'">
+          Cerrar Sesión ({{ session.usuario }})
+        </button>
+      </div>
+      {% endif %}
+
+      <header>
+        <h1>Catálogo de la Tabla {{ session.get('selected_table_name', 'Nombre de la Tabla') }}</h1>
+      </header>
+
+      <div style="margin-bottom: 1rem">
+        <button type="button" onclick="window.location.href='/tables'" class="btn-secondary mt-2">
+          Opciones de Tabla
+        </button>
+      </div>
+
+      {% if error_message %}
+      <p class="error-message">{{ error_message }}</p>
+      {% elif success_message %}
+      <p class="success-message">{{ success_message }}</p>
+      {% endif %}
+
+      <div style="margin-bottom: 1rem">
+        <a class="download-link" href="/descargar-excel">Descargar Excel (datos.xlsx)</a>
+      </div>
+
+      <section id="formulario-agregar">
+        <h2>Agregar Nuevo Registro</h2>
+        <form method="POST" enctype="multipart/form-data">
+          {% for header in session.get("selected_headers", []) %} {% if header.lower() != "imagenes" %}
+          <label for="{{ header }}">{{ header }}:</label>
+          <input type="text" name="{{ header }}" placeholder="Introduce {{ header }}" required />
+          {% endif %} {% endfor %}
+          <label for="imagenes">Imágenes (hasta 3):</label>
+          <input type="file" name="imagenes" multiple />
+          <button type="submit" class="btn-secondary mt-2">Agregar</button>
+        </form>
+      </section>
+
+      <section id="instrucciones">
+        <h2>Instrucciones para el Catálogo</h2>
+        <ul>
+          <li><strong>Agregar Registro:</strong> Completa el formulario y asegúrate de que el "Número" sea único.</li>
+          <li><strong>Descargar Excel:</strong> Usa el enlace "Descargar Excel" para obtener el archivo ZIP.</li>
+          <li><strong>Editar Registros:</strong> Haz clic en "Editar" en la columna de acciones.</li>
+          <li><strong>Visualización de Imágenes:</strong> Haz clic en una miniatura para ampliar.</li>
+          <li><strong>Opciones de Tabla:</strong> Crea o importa nuevas hojas de cálculo.</li>
+        </ul>
+      </section>
+
+      <section id="tabla-registros">
+        <h2>Listado de Registros</h2>
+        <table>
+          <thead>
+            <tr>
+              {% for header in session.get("selected_headers", []) %}
+              <th>{{ header }}</th>
+              {% endfor %}
+              <th>Imágenes</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for item in data %}
+            <tr>
+              {% for header in session.get("selected_headers", []) %}
+              <td>{{ item.get(header.replace(" ", "_").replace(".", "_"), '') }}</td>
+              {% endfor %}
+              <td>
+                {% if item.get("Imagenes") %} {% for ruta in item.get("Imagenes", []) %} {% if ruta %}
+                {% if ruta.startswith('s3://') %}
+                    {% set filename = ruta.split('/')[-1] %}
+                    <img src="/imagenes_subidas/{{ filename }}?s3=true" alt="Imagen actual" class="thumbnail" onclick="showModal('/imagenes_subidas/{{ filename }}?s3=true')" />
+                {% else %}
+                    <img src="{{ ruta }}" alt="Imagen actual" class="thumbnail" onclick="showModal('{{ ruta }}')" />
+                {% endif %}
+                {% endif %} {% endfor %} {% else %}
+                <p>Sin imágenes</p>
+                {% endif %}
+              </td>
+              <td>
+                {% if item.get("Número") %}
+                <a href="/editar/{{ item.get('Número') }}">Editar</a>
+                {% else %}
+                <span class="error-text">Error: Sin número</span>
+                {% endif %}
+              </td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </section>
+    </div>
+
+    <div id="imageModal" class="modal">
+      <div class="modal-content">
+        <span class="close" onclick="closeModal()">&times;</span>
+        <img id="modalImage" src="" alt="Imagen ampliada" />
+      </div>
+    </div>
+
+    <script>
+      function showModal(imageSrc) {
+        document.getElementById('modalImage').src = imageSrc;
+        document.getElementById('imageModal').style.display = 'block';
+      }
+      function closeModal() {
+        document.getElementById('imageModal').style.display = 'none';
+      }
+      window.onclick = function (event) {
+        if (event.target === document.getElementById('imageModal')) {
+          closeModal();
+        }
+      };
+    </script>
+  </body>
+</html>

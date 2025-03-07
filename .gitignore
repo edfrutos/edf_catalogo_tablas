@@ -1,0 +1,6 @@
+# Ignore environment variables and secrets
+.env
+.env.*
+
+# Ignore large files
+unused_images_backup.tar.gz

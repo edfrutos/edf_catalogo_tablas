@@ -1,0 +1,80 @@
+2025-03-06 18:00:24,792 - INFO - === Iniciando proceso de limpieza de imágenes ===
+2025-03-06 18:00:24,919 - INFO - Conexión exitosa a MongoDB: mongodb+srv://edfrutos:rYjwUC6pUNrLtbaI@cluster0.pmokh.mongodb.net/?retryWrites=true&w=majority
+2025-03-06 18:00:24,919 - INFO - Base de datos: catalogo
+2025-03-06 18:00:55,017 - ERROR - Error al conectar a MongoDB: cluster0-shard-00-02.pmokh.mongodb.net:27017: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1018) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms),cluster0-shard-00-01.pmokh.mongodb.net:27017: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1018) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms),cluster0-shard-00-00.pmokh.mongodb.net:27017: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1018) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms), Timeout: 30s, Topology Description: <TopologyDescription id: 67c9d4a8a372fb9340145255, topology_type: ReplicaSetNoPrimary, servers: [<ServerDescription ('cluster0-shard-00-00.pmokh.mongodb.net', 27017) server_type: Unknown, rtt: None, error=AutoReconnect('cluster0-shard-00-00.pmokh.mongodb.net:27017: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1018) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, <ServerDescription ('cluster0-shard-00-01.pmokh.mongodb.net', 27017) server_type: Unknown, rtt: None, error=AutoReconnect('cluster0-shard-00-01.pmokh.mongodb.net:27017: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1018) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>, <ServerDescription ('cluster0-shard-00-02.pmokh.mongodb.net', 27017) server_type: Unknown, rtt: None, error=AutoReconnect('cluster0-shard-00-02.pmokh.mongodb.net:27017: [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: unable to get local issuer certificate (_ssl.c:1018) (configured timeouts: socketTimeoutMS: 20000.0ms, connectTimeoutMS: 20000.0ms)')>]>
+2025-03-06 18:02:39,822 - INFO - === Iniciando proceso de limpieza de imágenes ===
+2025-03-06 18:02:39,921 - INFO - Conexión exitosa a MongoDB: mongodb+srv://edfrutos:rYjwUC6pUNrLtbaI@cluster0.pmokh.mongodb.net/?retryWrites=true&w=majority
+2025-03-06 18:02:39,921 - INFO - Base de datos: catalogo
+2025-03-06 18:02:40,552 - INFO - Colecciones disponibles: []
+2025-03-06 18:02:40,552 - INFO - Buscando imágenes referenciadas en la base de datos...
+2025-03-06 18:02:40,591 - INFO - Total de documentos analizados: 0
+2025-03-06 18:02:40,591 - INFO - Documentos con imágenes: 0
+2025-03-06 18:02:40,591 - INFO - Imágenes locales referenciadas: 0
+2025-03-06 18:02:40,591 - INFO - Total de archivos encontrados en /Users/edefrutos/_Repositorios/edf_catalogo_tablas/imagenes_subidas: 0
+2025-03-06 18:02:40,591 - INFO - No hay imágenes locales para procesar.
+2025-03-06 18:02:40,591 - INFO - === Resumen de la operación ===
+2025-03-06 18:02:40,591 - INFO - Imágenes referenciadas: 0
+2025-03-06 18:02:40,591 - INFO - Imágenes locales: 0
+2025-03-06 18:02:40,591 - INFO - Imágenes no utilizadas: 0
+2025-03-06 18:02:40,591 - INFO - Imágenes movidas: 0
+2025-03-06 18:02:40,591 - INFO - Imágenes eliminadas: 0
+2025-03-06 18:02:40,591 - INFO - Errores: 0
+2025-03-06 18:02:40,591 - INFO - Envío de correo desactivado.
+2025-03-06 18:02:40,591 - INFO - === Proceso de limpieza finalizado ===
+2025-03-06 18:06:27,586 - INFO - === Iniciando proceso de limpieza de imágenes ===
+2025-03-06 18:06:27,709 - INFO - Conexión exitosa a MongoDB: mongodb+srv://edfrutos:rYjwUC6pUNrLtbaI@cluster0.pmokh.mongodb.net/?retryWrites=true&w=majority
+2025-03-06 18:06:27,709 - INFO - Base de datos: app_catalogojoyero
+2025-03-06 18:06:28,218 - INFO - Colecciones disponibles: ['password_resets', 'spreadsheets', '67b8c24a7fdc72dd4d8703cf', 'users']
+2025-03-06 18:06:28,218 - INFO - Buscando imágenes referenciadas en la base de datos...
+2025-03-06 18:06:28,435 - INFO - Procesando colección principal de catálogo: 67b8c24a7fdc72dd4d8703cf
+2025-03-06 18:06:28,517 - ERROR - Error general en la ejecución: 'NoneType' object has no attribute 'startswith'
+Traceback (most recent call last):
+  File "/Users/edefrutos/_Repositorios/edf_catalogo_tablas/clean_images_scheduled.py", line 354, in <module>
+    main()
+    ~~~~^^
+  File "/Users/edefrutos/_Repositorios/edf_catalogo_tablas/clean_images_scheduled.py", line 327, in main
+    referenced_images = get_referenced_images(db)
+  File "/Users/edefrutos/_Repositorios/edf_catalogo_tablas/clean_images_scheduled.py", line 154, in get_referenced_images
+    if img_path.startswith("s3://"):
+       ^^^^^^^^^^^^^^^^^^^
+AttributeError: 'NoneType' object has no attribute 'startswith'
+2025-03-06 18:08:15,701 - INFO - === Iniciando proceso de limpieza de imágenes ===
+2025-03-06 18:08:15,831 - INFO - Conexión exitosa a MongoDB: mongodb+srv://edfrutos:rYjwUC6pUNrLtbaI@cluster0.pmokh.mongodb.net/?retryWrites=true&w=majority
+2025-03-06 18:08:15,831 - INFO - Base de datos: app_catalogojoyero
+2025-03-06 18:08:16,386 - INFO - Colecciones disponibles: ['password_resets', 'spreadsheets', '67b8c24a7fdc72dd4d8703cf', 'users']
+2025-03-06 18:08:16,386 - INFO - Buscando imágenes referenciadas en la base de datos...
+2025-03-06 18:08:16,593 - INFO - Procesando colección principal de catálogo: 67b8c24a7fdc72dd4d8703cf
+2025-03-06 18:08:16,850 - INFO - Total de documentos analizados: 641
+2025-03-06 18:08:16,850 - INFO - Documentos con imágenes: 616
+2025-03-06 18:08:16,850 - INFO - Imágenes locales referenciadas: 1
+2025-03-06 18:08:16,851 - INFO - Total de archivos encontrados en /Users/edefrutos/_Repositorios/edf_catalogo_tablas/imagenes_subidas: 0
+2025-03-06 18:08:16,851 - INFO - No hay imágenes locales para procesar.
+2025-03-06 18:08:16,851 - INFO - === Resumen de la operación ===
+2025-03-06 18:08:16,851 - INFO - Imágenes referenciadas: 1
+2025-03-06 18:08:16,851 - INFO - Imágenes locales: 0
+2025-03-06 18:08:16,851 - INFO - Imágenes no utilizadas: -1
+2025-03-06 18:08:16,851 - INFO - Imágenes movidas: 0
+2025-03-06 18:08:16,851 - INFO - Imágenes eliminadas: 0
+2025-03-06 18:08:16,851 - INFO - Errores: 0
+2025-03-06 18:08:16,851 - INFO - Envío de correo desactivado.
+2025-03-06 18:08:16,851 - INFO - === Proceso de limpieza finalizado ===
+2025-03-06 18:10:55,139 - INFO - === Iniciando proceso de limpieza de imágenes ===
+2025-03-06 18:10:55,269 - INFO - Conexión exitosa a MongoDB: mongodb+srv://edfrutos:rYjwUC6pUNrLtbaI@cluster0.pmokh.mongodb.net/?retryWrites=true&w=majority
+2025-03-06 18:10:55,270 - INFO - Base de datos: app_catalogojoyero
+2025-03-06 18:10:55,832 - INFO - Colecciones disponibles: ['password_resets', 'spreadsheets', '67b8c24a7fdc72dd4d8703cf', 'users']
+2025-03-06 18:10:55,832 - INFO - Buscando imágenes referenciadas en la base de datos...
+2025-03-06 18:10:56,037 - INFO - Procesando colección principal de catálogo: 67b8c24a7fdc72dd4d8703cf
+2025-03-06 18:10:56,289 - INFO - Total de documentos analizados: 641
+2025-03-06 18:10:56,290 - INFO - Documentos con imágenes: 616
+2025-03-06 18:10:56,290 - INFO - Imágenes locales referenciadas: 1
+2025-03-06 18:10:56,290 - INFO - Total de archivos encontrados en /Users/edefrutos/_Repositorios/edf_catalogo_tablas/imagenes_subidas: 0
+2025-03-06 18:10:56,290 - INFO - No hay imágenes locales para procesar.
+2025-03-06 18:10:56,290 - INFO - === Resumen de la operación ===
+2025-03-06 18:10:56,290 - INFO - Imágenes referenciadas: 1
+2025-03-06 18:10:56,290 - INFO - Imágenes locales: 0
+2025-03-06 18:10:56,290 - INFO - Imágenes no utilizadas: 0
+2025-03-06 18:10:56,290 - INFO - Imágenes movidas: 0
+2025-03-06 18:10:56,290 - INFO - Imágenes eliminadas: 0
+2025-03-06 18:10:56,290 - INFO - Errores: 0
+2025-03-06 18:10:56,290 - INFO - Envío de correo desactivado.
+2025-03-06 18:10:56,290 - INFO - === Proceso de limpieza finalizado ===

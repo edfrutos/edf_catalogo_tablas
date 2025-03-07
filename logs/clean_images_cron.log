@@ -1,0 +1,27 @@
+Traceback (most recent call last):
+  File "./clean_images_scheduled.py", line 24, in <module>
+    from pymongo import MongoClient
+ModuleNotFoundError: No module named 'pymongo'
+Error in sys.excepthook:
+Traceback (most recent call last):
+  File "/usr/lib/python3/dist-packages/apport_python_hook.py", line 72, in apport_excepthook
+    from apport.fileutils import likely_packaged, get_recent_crashes
+  File "/usr/lib/python3/dist-packages/apport/__init__.py", line 5, in <module>
+    from apport.report import Report
+  File "/usr/lib/python3/dist-packages/apport/report.py", line 32, in <module>
+    import apport.fileutils
+  File "/usr/lib/python3/dist-packages/apport/fileutils.py", line 12, in <module>
+    import os, glob, subprocess, os.path, time, pwd, sys, requests_unixsocket
+  File "/usr/lib/python3/dist-packages/requests_unixsocket/__init__.py", line 1, in <module>
+    import requests
+  File "/usr/lib/python3/dist-packages/requests/__init__.py", line 113, in <module>
+    from . import packages
+  File "/usr/lib/python3/dist-packages/requests/packages.py", line 7, in <module>
+    locals()[package] = __import__(package)
+ModuleNotFoundError: No module named 'idna'
+
+Original exception was:
+Traceback (most recent call last):
+  File "./clean_images_scheduled.py", line 24, in <module>
+    from pymongo import MongoClient
+ModuleNotFoundError: No module named 'pymongo'
