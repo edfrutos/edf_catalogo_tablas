@@ -1,10 +1,43 @@
 import os
 import certifi
 import secrets
+
+# Función auxiliar para detectar números flotantes\ndef is_float(value):\n    try:\n        float(value)\n        return True\n    except (ValueError, TypeError):\n        return False
 from datetime import datetime, timedelta
 import tempfile
 import zipfile
+from dotenv import load_dotenv
+import sys
 
+# Cargar variables de entorno desde .env
+load_dotenv()
+
+# Validación de variables de entorno críticas
+variables_criticas = {
+    'FLASK_SECRET_KEY': 'clave secreta para Flask',
+    'MONGO_URI': 'URI de conexión a MongoDB',
+    'MAIL_SERVER': 'servidor de correo SMTP',
+    'MAIL_PORT': 'puerto del servidor de correo',
+    'MAIL_USERNAME': 'nombre de usuario del correo',
+    'MAIL_PASSWORD': 'contraseña del correo',
+    'MAIL_DEFAULT_SENDER_NAME': 'nombre del remitente por defecto',
+    'MAIL_DEFAULT_SENDER_EMAIL': 'correo del remitente por defecto'
+}
+
+variables_faltantes = []
+for variable, descripcion in variables_criticas.items():
+    if not os.environ.get(variable):
+        variables_faltantes.append(f"{variable} ({descripcion})")
+
+if variables_faltantes:
+    error_message = "ERROR: Faltan las siguientes variables de entorno críticas:\n"
+    for var in variables_faltantes:
+        error_message += f"  - {var}\n"
+    error_message += "\nPor favor, configura estas variables en el archivo .env antes de ejecutar la aplicación."
+    
+    print(error_message, file=sys.stderr)
+    # Opcional: terminar la ejecución si faltan variables críticas
+    # sys.exit(1)
 from flask import (
     Flask, request, render_template, redirect, url_for,
     send_from_directory, session, flash, send_file
@@ -16,15 +49,35 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from pymongo import MongoClient
 from flask_mail import Mail, Message
 from bson import ObjectId
+import logging
+logging.basicConfig(filename="/var/www/vhosts/edefrutos2025.xyz/httpdocs/flask_app.log", level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 # Forzar el uso del bundle de certificados de certifi
 os.environ['SSL_CERT_FILE'] = certifi.where()
+
+# Importación de AWS S3
+import boto3
+from botocore.exceptions import ClientError
+
+# Configuración de AWS S3
+AWS_ACCESS_KEY_ID = os.getenv('AWS_ACCESS_KEY_ID')
+AWS_SECRET_ACCESS_KEY = os.getenv('AWS_SECRET_ACCESS_KEY')
+AWS_REGION = os.getenv('AWS_REGION')
+S3_BUCKET_NAME = os.getenv('S3_BUCKET_NAME')
+
+# Inicialización del cliente S3
+s3_client = boto3.client(
+    's3',
+    aws_access_key_id=AWS_ACCESS_KEY_ID,
+    aws_secret_access_key=AWS_SECRET_ACCESS_KEY,
+    region_name=AWS_REGION
+)
 
 # -------------------------------------------
 # CONFIGURACIÓN FLASK
 # -------------------------------------------
 app = Flask(__name__)
-app.secret_key = os.environ.get("MBZl1W45ute3UEMCXPlL9JzcR7XsTeUi-4ZI6KCd79M", "CAMBIA_ESTA_CLAVE_EN_PRODUCCION")
+app.secret_key = os.environ.get("FLASK_SECRET_KEY", os.urandom(24).hex())
 
 # Carpeta para imágenes del catálogo
 app.config["UPLOAD_FOLDER"] = os.path.join(app.root_path, "imagenes_subidas")
@@ -40,27 +93,173 @@ ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "gif"}
 def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
 
+def eliminar_archivo_imagen(ruta_imagen):
+    """Función auxiliar para eliminar físicamente un archivo de imagen.
+    
+    Args:
+        ruta_imagen: Ruta relativa de la imagen (ej: /imagenes_subidas/imagen.jpg) o URI de S3 (ej: s3://bucket/key)
+    
+    Returns:
+        bool: True si se eliminó correctamente, False en caso contrario
+    """
+    if not ruta_imagen:
+        return False
+    
+    # Verificar si es una ruta S3
+    if ruta_imagen.startswith('s3://'):
+        # Extraer el nombre del objeto S3 de la ruta
+        try:
+            # Formato s3://bucket-name/object-key
+            parts = ruta_imagen[5:].split('/', 1)
+            if len(parts) != 2:
+                print(f"Formato de ruta S3 inválido: {ruta_imagen}")
+                return False
+            
+            bucket_name, object_key = parts
+            if bucket_name != S3_BUCKET_NAME:
+                print(f"El bucket en la ruta ({bucket_name}) no coincide con el configurado ({S3_BUCKET_NAME})")
+                return False
+                
+            return delete_file_from_s3(object_key)
+        except Exception as e:
+            print(f"Error al eliminar el archivo de S3 {ruta_imagen}: {str(e)}")
+            return False
+    else:
+        # Comportamiento anterior para archivos locales
+        # Convertir ruta relativa a absoluta
+        if ruta_imagen.startswith('/'):
+            # Eliminar la barra inicial para construir la ruta correctamente
+            ruta_imagen = ruta_imagen[1:]
+        
+        ruta_absoluta = os.path.join(app.root_path, ruta_imagen)
+        
+        try:
+            if os.path.exists(ruta_absoluta):
+                os.remove(ruta_absoluta)
+                print(f"Archivo eliminado: {ruta_absoluta}")
+                return True
+            else:
+                print(f"El archivo no existe: {ruta_absoluta}")
+                return False
+        except Exception as e:
+            print(f"Error al eliminar el archivo {ruta_absoluta}: {str(e)}")
+            return False
+
+def upload_file_to_s3(file_path, object_name=None, max_retries=3, delete_local=True):
+    """Sube un archivo a un bucket de S3, verifica que la subida fue exitosa, 
+    implementa reintentos en caso de fallo y elimina el archivo local después de la subida
+    
+    Args:
+        file_path: Ruta del archivo a subir
+        object_name: Nombre de objeto S3, si es None, se usa el nombre del archivo
+        max_retries: Número máximo de intentos de subida (por defecto: 3)
+        delete_local: Si True, elimina el archivo local después de una subida exitosa
+    
+    Returns:
+        bool: True si la subida es exitosa, False en caso contrario
+    """
+    if object_name is None:
+        object_name = os.path.basename(file_path)
+    
+    if not os.path.exists(file_path):
+        app.logger.error(f"El archivo {file_path} no existe")
+        return False
+    
+    successful = False
+    attempt = 0
+    
+    while attempt < max_retries and not successful:
+        attempt += 1
+        app.logger.info(f"Intento {attempt}/{max_retries} - Subiendo archivo a S3: {object_name}")
+        
+        try:
+            # Subir el archivo a S3
+            s3_client.upload_file(file_path, S3_BUCKET_NAME, object_name)
+            
+            # Verificar que el archivo existe en S3
+            try:
+                s3_client.head_object(Bucket=S3_BUCKET_NAME, Key=object_name)
+                successful = True
+                app.logger.info(f"✅ Archivo subido y verificado en S3: {object_name}")
+            except ClientError as e:
+                app.logger.warning(f"⚠️ Archivo subido pero no se pudo verificar en S3: {object_name}. Error: {e}")
+                # Si el archivo no se puede verificar, se considera como un error
+                successful = False
+                
+        except ClientError as e:
+            app.logger.error(f"❌ Error al subir archivo a S3 (intento {attempt}/{max_retries}): {e}")
+            if attempt < max_retries:
+                import time
+                # Esperar un tiempo incremental entre reintentos (backoff exponencial)
+                wait_time = 2 ** attempt
+                app.logger.info(f"Esperando {wait_time} segundos antes del siguiente intento...")
+                time.sleep(wait_time)
+    
+    # Si la subida fue exitosa y se solicita eliminar el archivo local
+    if successful and delete_local:
+        try:
+            os.remove(file_path)
+            app.logger.info(f"🗑️ Archivo local eliminado después de subida exitosa: {file_path}")
+        except Exception as e:
+            app.logger.warning(f"⚠️ No se pudo eliminar el archivo local {file_path}: {e}")
+    
+    return successful
+
+def delete_file_from_s3(object_name):
+    """Elimina un archivo de un bucket de S3
+    
+    Args:
+        object_name: Nombre del objeto a eliminar
+    
+    Returns:
+        bool: True si la eliminación es exitosa, False en caso contrario
+    """
+    try:
+        s3_client.delete_object(Bucket=S3_BUCKET_NAME, Key=object_name)
+        print(f"Archivo eliminado de S3: {object_name}")
+        return True
+    except ClientError as e:
+        print(f"Error eliminando archivo de S3: {e}")
+        return False
+
+def get_s3_url(object_name, expiration=3600):
+    """Genera una URL prefirmada para acceder a un objeto de S3
+    
+    Args:
+        object_name: Nombre del objeto S3
+        expiration: Tiempo de expiración en segundos (1 hora por defecto)
+    
+    Returns:
+        str: URL generada o None si hay error
+    """
+    try:
+        url = s3_client.generate_presigned_url(
+            'get_object',
+            Params={'Bucket': S3_BUCKET_NAME, 'Key': object_name},
+            ExpiresIn=expiration
+        )
+        return url
+    except ClientError as e:
+        print(f"Error generando URL prefirmada: {e}")
+        return None
 # -------------------------------------------
 # CONFIGURACIÓN DE EMAIL (Flask-Mail)
 # -------------------------------------------
-app.config["MAIL_SERVER"] = "smtp-relay.brevo.com"
-app.config["MAIL_PORT"] = 587
-app.config["MAIL_USE_TLS"] = True
-app.config["MAIL_USERNAME"] = "admin@edefrutos.me"
-app.config["MAIL_PASSWORD"] = "Rmp3UXwsIkvA0c1d"
-app.config["MAIL_DEFAULT_SENDER"] = ("Administrador", "admin@edefrutos.me")
-app.config["MAIL_DEBUG"] = True
+app.config["MAIL_SERVER"] = os.environ.get("MAIL_SERVER")
+app.config["MAIL_PORT"] = int(os.environ.get("MAIL_PORT", 587))
+app.config["MAIL_USE_TLS"] = os.environ.get("MAIL_USE_TLS", "True") == "True"
+app.config["MAIL_USERNAME"] = os.environ.get("MAIL_USERNAME")
+app.config["MAIL_PASSWORD"] = os.environ.get("MAIL_PASSWORD")
+app.config["MAIL_DEFAULT_SENDER"] = (
+    os.environ.get("MAIL_DEFAULT_SENDER_NAME"),
+    os.environ.get("MAIL_DEFAULT_SENDER_EMAIL")
+)
+app.config["MAIL_DEBUG"] = os.environ.get("MAIL_DEBUG", "False") == "True"
 mail = Mail(app)
 
-# -------------------------------------------
-# CONEXIÓN A MONGODB ATLAS
-# -------------------------------------------
-from pymongo.mongo_client import MongoClient
-from pymongo.server_api import ServerApi
-
-MONGO_URI = "mongodb+srv://edfrutos:rYjwUC6pUNrLtbaI@cluster0.pmokh.mongodb.net/?retryWrites=true&w=majority"
-
 # Crear la conexión a MongoDB Atlas
+MONGO_URI = os.environ.get("MONGO_URI")
+from pymongo.server_api import ServerApi
 client = MongoClient(
     MONGO_URI,
     tls=True,
@@ -78,7 +277,7 @@ except Exception as e:
 db = client["app_catalogojoyero"]
 
 # Mostrar colecciones disponibles
-print("📌 Colecciones disponibles en MongoDB:", db.list_collection_names())
+print("\U0001F4CC Colecciones disponibles en MongoDB:", db.list_collection_names())
 
 # Definir la colección específica del catálogo
 catalog_collection = db["67b8c24a7fdc72dd4d8703cf"]  # Asegúrate de que el nombre es el correcto
@@ -88,12 +287,12 @@ spreadsheets_collection = db["spreadsheets"]
 
 # Verificar si la colección tiene datos
 registros = list(catalog_collection.find())
+# Comentado para evitar imprimir todos los documentos
+# print("\U0001F4CC Documentos en la colección:")
+# for doc in registros:
+#     print(doc)
+print(f"\U0001F4CC Total de registros en la colección: {len(registros)}")
 
-print("📌 Documentos en la colección:")
-for doc in registros:
-    print(doc)
-
-print(f"📌 Total de registros obtenidos: {len(registros)}")
 
 # Insertar un documento de prueba si la colección está vacía
 if len(registros) == 0:
@@ -101,8 +300,8 @@ if len(registros) == 0:
     catalog_collection.insert_one(doc_prueba)
     print("✅ Se insertó un documento de prueba.")
 
-# Verificar que el documento de prueba se insertó correctamente
-print("📌 Registros después de la prueba:", list(catalog_collection.find()))
+# Comentado para evitar la impresión extensa de documentos
+# print("\U0001F4CC Registros después de la prueba:", list(catalog_collection.find()))
 
 # -------------------------------------------
 # FUNCIONES AUXILIARES PARA HOJAS DE CÁLCULO
@@ -288,79 +487,128 @@ def home():
 
 @app.route("/tables", methods=["GET", "POST"])
 def tables():
-    if "usuario" not in session:
-        return redirect(url_for("login"))
+    try:
+        if "usuario" not in session:
+            return redirect(url_for("login"))
 
-    owner = session["usuario"]
+        owner = session["usuario"]
 
-    if request.method == "POST":
-        table_name = request.form.get("table_name", "").strip()
-        import_file = request.files.get("import_table")
+        if request.method == "POST":
+            try:
+                table_name = request.form.get("table_name", "").strip()
+                import_file = request.files.get("import_table")
 
-        if import_file and import_file.filename != "":
-            # Importar el Excel
-            filename = secure_filename(import_file.filename)
-            filepath = os.path.join(SPREADSHEET_FOLDER, filename)
-            import_file.save(filepath)
-            
-            # Leer los encabezados del Excel importado
-            wb = openpyxl.load_workbook(filepath)
-            hoja = wb.active
-            headers = next(hoja.iter_rows(min_row=1, max_row=1, values_only=True))
-            wb.close()
-            
-            # Verificar que los encabezados no estén vacíos
-            if not headers or all(header is None for header in headers):
-                flash("El archivo Excel importado no contiene encabezados válidos.", "error")
+                if import_file and import_file.filename != "":
+                    try:
+                        # Importar el Excel
+                        filename = secure_filename(import_file.filename)
+                        filepath = os.path.join(SPREADSHEET_FOLDER, filename)
+                        import_file.save(filepath)
+                        
+                        try:
+                            # Leer los encabezados del Excel importado
+                            wb = openpyxl.load_workbook(filepath)
+                            hoja = wb.active
+                            headers = next(hoja.iter_rows(min_row=1, max_row=1, values_only=True))
+                            wb.close()
+                        except Exception as e:
+                            app.logger.error(f"Error al leer el archivo Excel: {str(e)}")
+                            flash("Error al leer el archivo Excel. Verifique que el formato sea correcto.", "error")
+                            return redirect(url_for("tables"))
+                        
+                        # Verificar que los encabezados no estén vacíos
+                        if not headers or all(header is None for header in headers):
+                            flash("El archivo Excel importado no contiene encabezados válidos.", "error")
+                            return redirect(url_for("tables"))
+
+                        try:
+                            # Guardar info en MongoDB
+                            spreadsheets_collection.insert_one({
+                                "owner": owner,
+                                "name": table_name,
+                                "filename": filename,
+                                "headers": headers,
+                                "created_at": datetime.utcnow()
+                            })
+                        except Exception as e:
+                            app.logger.error(f"Error al guardar en MongoDB: {str(e)}")
+                            flash("Error al guardar la información de la tabla en la base de datos.", "error")
+                            return redirect(url_for("tables"))
+                    except Exception as e:
+                        app.logger.error(f"Error al guardar el archivo subido: {str(e)}")
+                        flash("Error al procesar el archivo subido. Inténtelo de nuevo.", "error")
+                        return redirect(url_for("tables"))
+                else:
+                    try:
+                        # Caso en que no sube archivo (creas uno nuevo con encabezados)
+                        headers_str = request.form.get("table_headers", "").strip()
+                        if not headers_str:
+                            headers = ["Número", "Descripción", "Peso", "Valor"]  # Por defecto
+                        else:
+                            headers = [h.strip() for h in headers_str.split(",") if h.strip()]
+
+                        # Verificar que los encabezados no estén vacíos
+                        if not headers:
+                            flash("Debe proporcionar al menos un encabezado válido.", "error")
+                            return redirect(url_for("tables"))
+                        
+                        file_id = secrets.token_hex(8)
+                        filename = f"table_{file_id}.xlsx"
+                        filepath = os.path.join(SPREADSHEET_FOLDER, filename)
+                        
+                        try:
+                            wb = Workbook()
+                            hoja = wb.active
+                            hoja.append(headers)
+                            wb.save(filepath)
+                            wb.close()
+                        except Exception as e:
+                            app.logger.error(f"Error al crear el archivo Excel: {str(e)}")
+                            flash("Error al crear el archivo Excel. Inténtelo de nuevo.", "error")
+                            return redirect(url_for("tables"))
+
+                        try:
+                            # Guardar info en MongoDB
+                            spreadsheets_collection.insert_one({
+                                "owner": owner,
+                                "name": table_name,
+                                "filename": filename,
+                                "headers": headers,
+                                "created_at": datetime.utcnow()
+                            })
+                        except Exception as e:
+                            app.logger.error(f"Error al guardar en MongoDB: {str(e)}")
+                            flash("Error al guardar la información de la tabla en la base de datos.", "error")
+                            return redirect(url_for("tables"))
+                    except Exception as e:
+                        app.logger.error(f"Error al crear nueva tabla: {str(e)}")
+                        flash("Error al crear la nueva tabla. Inténtelo de nuevo.", "error")
+                        return redirect(url_for("tables"))
+                
+                try:
+                    # Almacenar los encabezados en la sesión para su uso posterior
+                    session["selected_headers"] = headers
+                except Exception as e:
+                    app.logger.warning(f"Error al guardar encabezados en sesión: {str(e)}")
+                    # No es crítico, continuamos
+                return redirect(url_for("tables"))
+            except Exception as e:
+                app.logger.error(f"Error general en el procesamiento POST de tablas: {str(e)}")
+                flash("Error al procesar la solicitud. Inténtelo de nuevo.", "error")
                 return redirect(url_for("tables"))
 
-            # Guardar info en MongoDB
-            spreadsheets_collection.insert_one({
-                "owner": owner,
-                "name": table_name,
-                "filename": filename,
-                "headers": headers,
-                "created_at": datetime.utcnow()
-            })
-        else:
-            # Caso en que no sube archivo (creas uno nuevo con encabezados)
-            headers_str = request.form.get("table_headers", "").strip()
-            if not headers_str:
-                headers = ["Número", "Descripción", "Peso", "Valor"]  # Por defecto
-            else:
-                headers = [h.strip() for h in headers_str.split(",") if h.strip()]
-
-            # Verificar que los encabezados no estén vacíos
-            if not headers:
-                flash("Debe proporcionar al menos un encabezado válido.", "error")
-                return redirect(url_for("tables"))
-            
-            file_id = secrets.token_hex(8)
-            filename = f"table_{file_id}.xlsx"
-            filepath = os.path.join(SPREADSHEET_FOLDER, filename)
-            
-            wb = Workbook()
-            hoja = wb.active
-            hoja.append(headers)
-            wb.save(filepath)
-            wb.close()
-
-            # Guardar info en MongoDB
-            spreadsheets_collection.insert_one({
-                "owner": owner,
-                "name": table_name,
-                "filename": filename,
-                "headers": headers,
-                "created_at": datetime.utcnow()
-            })
-        
-        # Almacenar los encabezados en la sesión para su uso posterior
-        session["selected_headers"] = headers
-        return redirect(url_for("tables"))
-
-    # GET: mostrar las tablas existentes
-    todas_las_tablas = list(spreadsheets_collection.find({"owner": session["usuario"]}))
-    return render_template("tables.html", tables=todas_las_tablas)
+        try:
+            # GET: mostrar las tablas existentes
+            todas_las_tablas = list(spreadsheets_collection.find({"owner": session["usuario"]}))
+            return render_template("tables.html", tables=todas_las_tablas)
+        except Exception as e:
+            app.logger.error(f"Error al consultar tablas en MongoDB: {str(e)}")
+            flash("Error al cargar las tablas. Inténtelo de nuevo más tarde.", "error")
+            return render_template("tables.html", tables=[])
+    except Exception as e:
+        app.logger.error(f"Error crítico en la función tables(): {str(e)}")
+        flash("Ha ocurrido un error inesperado. Por favor, inténtelo de nuevo.", "error")
+        return redirect(url_for("welcome"))
 
 @app.route("/select_table/<table_id>")
 def select_table(table_id):
@@ -409,7 +657,13 @@ def catalog():
     session["selected_headers"] = headers
 
     # Obtener registros de MongoDB para la tabla seleccionada
-    registros = list(catalog_collection.find({"table": selected_table}))
+    # Asegurarse de que el campo "Número" es entero antes de ordenar
+    pipeline = [
+        {"$match": {"table": selected_table}},
+        {"$addFields": {"NumeroOrdenacion": {"$toInt": {"$ifNull": [{"$toInt": "$Número"}, "$Número"]}}}},
+        {"$sort": {"NumeroOrdenacion": 1}}
+    ]
+    registros = list(catalog_collection.aggregate(pipeline))
 
     if request.method == "POST":
         form_data = {k.strip(): v.strip() for k, v in request.form.items()}
@@ -431,19 +685,46 @@ def catalog():
         
         # Agregar los campos del formulario
         for header in headers:
-            nuevo_registro[header] = form_data.get(header, "").strip()
+            safe_header = header.replace(" ", "_").replace(".", "_")
+            nuevo_registro[safe_header] = form_data.get(header, "").strip()
 
+        # Manejo de imágenes
         # Manejo de imágenes
         files = request.files.getlist("imagenes")
         rutas_imagenes = [None, None, None]
-
+        
         for i, file in enumerate(files[:3]):
             if file and allowed_file(file.filename):
-                fname = secure_filename(file.filename)
-                fpath = os.path.join(app.config["UPLOAD_FOLDER"], fname)
-                file.save(fpath)
-                rutas_imagenes[i] = f"/imagenes_subidas/{fname}"
-
+                # Generar un nombre único con timestamp y uuid para evitar colisiones
+                original_filename = secure_filename(file.filename)
+                timestamp = datetime.now().strftime('%Y%m%d_%H%M%S%f')
+                unique_id = secrets.token_hex(4)
+                extension = os.path.splitext(original_filename)[1]
+                unique_filename = f"{timestamp}_{unique_id}{extension}"
+                
+                app.logger.info(f"Procesando imagen {i+1} para nuevo registro: {unique_filename}")
+                
+                # Guardar temporalmente el archivo
+                temp_path = os.path.join(app.config["UPLOAD_FOLDER"], unique_filename)
+                file.save(temp_path)
+                
+                try:
+                    # Subir a S3 con nuestra función mejorada que verifica la subida y elimina archivos locales
+                    if upload_file_to_s3(temp_path, unique_filename, delete_local=True):
+                        # Si la carga a S3 es exitosa, guardamos la referencia a S3
+                        s3_url = f"s3://{S3_BUCKET_NAME}/{unique_filename}"
+                        rutas_imagenes[i] = s3_url
+                        app.logger.info(f"Imagen {i+1} subida exitosamente a S3: {s3_url}")
+                    else:
+                        app.logger.error(f"Falló la subida a S3 para imagen {i+1}: {unique_filename}")
+                        # No almacenamos la imagen localmente, solo registramos el error
+                except Exception as e:
+                    app.logger.error(f"Error al procesar imagen {i+1}: {str(e)}")
+                    # Asegurar que el archivo temporal se elimina incluso si hay error
+                    if os.path.exists(temp_path):
+                        os.remove(temp_path)
+                        app.logger.info(f"Archivo temporal eliminado: {temp_path}")
+        # Asignar las rutas de imágenes al nuevo registro
         nuevo_registro["Imagenes"] = rutas_imagenes
 
         # Insertar en MongoDB
@@ -476,11 +757,28 @@ def editar(id):
         return redirect(url_for("tables"))
 
     id_field = headers[0]
+    safe_id_field = id_field.replace(" ", "_").replace(".", "_")
 
-    # Obtenemos el registro desde MongoDB
-    registro = catalog_collection.find_one({id_field: id, "table": selected_table})
+    # Obtenemos el registro desde MongoDB - Intentamos primero con "Número" para tablas manuales
+    registro = None
+    encontrado_por_numero = False  # Variable para rastrear cómo se encontró el registro
+    
+    try:
+        # Intenta buscar por "Número" convertido a entero
+        num_id = int(id)
+        registro = catalog_collection.find_one({"Número": num_id, "table": selected_table})
+        if registro:
+            encontrado_por_numero = True  # Marcamos que se encontró por Número
+    except (ValueError, TypeError):
+        # Si la conversión falla, continúa con la búsqueda normal
+        pass
+        
+    # Si no encontramos el registro por "Número", intentamos con el encabezado original
     if not registro:
-        flash(f"No existe el {id_field} {id} en la tabla seleccionada.", "error")
+        registro = catalog_collection.find_one({safe_id_field: id, "table": selected_table})
+        
+    if not registro:
+        flash(f"No existe el registro con ID {id} en la tabla seleccionada.", "error")
         return redirect(url_for("catalog"))
 
     if request.method == "GET":
@@ -492,14 +790,30 @@ def editar(id):
                              imagenes_actuales=registro.get("Imagenes", [None, None, None]))
 
     # POST: Guardar cambios
+    # POST: Guardar cambios
     if request.form.get("delete_record") == "on":
-        result = catalog_collection.delete_one({id_field: id, "table": selected_table})
+        # Primero, eliminar físicamente las imágenes asociadas al registro
+        rutas_imagenes = registro.get("Imagenes", [])
+        for ruta in rutas_imagenes:
+            if ruta:  # Solo intentar eliminar si la ruta no es None
+                eliminar_archivo_imagen(ruta)
+                
+        # Ahora eliminar el registro de la base de datos
+        # Usar el mismo criterio por el que se encontró el registro originalmente
+        if encontrado_por_numero:
+            # Si se encontró por "Número", eliminamos usando ese campo
+            result = catalog_collection.delete_one({"Número": int(id), "table": selected_table})
+        else:
+            # Si se encontró por safe_id_field, eliminamos usando ese campo
+            result = catalog_collection.delete_one({safe_id_field: id, "table": selected_table})
+            
         if result.deleted_count > 0:
-            flash("Registro eliminado exitosamente.", "success")
+            # Renumerar registros para evitar huecos en la numeración
+            renumerar_registros(selected_table)
+            flash("Registro y sus imágenes eliminados exitosamente.", "success")
         else:
             flash("No se pudo eliminar el registro.", "error")
         return redirect(url_for("catalog"))
-
     try:
         # Actualizar campos (excluyendo imágenes)
         update_data = {}
@@ -517,28 +831,132 @@ def editar(id):
                 update_data[safe_header] = form_value
 
         # Manejo de imágenes
+        # Manejo de imágenes
         rutas_imagenes = registro.get("Imagenes", [None, None, None])
-        files = request.files.getlist("imagenes")
-
-        for i, file in enumerate(files[:3]):
-            if file and file.filename and allowed_file(file.filename):
-                fname = secure_filename(file.filename)
-                fpath = os.path.join(app.config["UPLOAD_FOLDER"], fname)
-                file.save(fpath)
-                rutas_imagenes[i] = f"/imagenes_subidas/{fname}"
-
+        
+        # Procesar cada campo de imagen por separado
+        # Imagen 1
+        imagen1 = request.files.get("imagen1")
+        if imagen1 and imagen1.filename and allowed_file(imagen1.filename):
+            # Generar un nombre único con timestamp y uuid para evitar colisiones
+            original_filename = secure_filename(imagen1.filename)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S%f')
+            unique_id = secrets.token_hex(4)
+            extension = os.path.splitext(original_filename)[1]
+            unique_filename = f"{timestamp}_{unique_id}{extension}"
+            
+            app.logger.info(f"Procesando imagen 1 para actualización: {unique_filename}")
+            
+            # Guardar temporalmente el archivo
+            temp_path = os.path.join(app.config["UPLOAD_FOLDER"], unique_filename)
+            imagen1.save(temp_path)
+            
+            try:
+                # Subir a S3 con nuestra función mejorada que verifica la subida y elimina archivos locales
+                if upload_file_to_s3(temp_path, unique_filename, delete_local=True):
+                    # Si la carga a S3 es exitosa, guardamos la referencia a S3
+                    s3_url = f"s3://{S3_BUCKET_NAME}/{unique_filename}"
+                    rutas_imagenes[0] = s3_url
+                    app.logger.info(f"Imagen 1 subida exitosamente a S3: {s3_url}")
+                else:
+                    app.logger.error(f"Falló la subida a S3 para imagen 1: {unique_filename}")
+                    # No almacenamos la imagen localmente, solo registramos el error
+            except Exception as e:
+                app.logger.error(f"Error al procesar imagen 1: {str(e)}")
+                # Asegurar que el archivo temporal se elimina incluso si hay error
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    app.logger.info(f"Archivo temporal eliminado: {temp_path}")
+            
+        # Imagen 2
+        imagen2 = request.files.get("imagen2")
+        if imagen2 and imagen2.filename and allowed_file(imagen2.filename):
+            # Generar un nombre único con timestamp y uuid para evitar colisiones
+            original_filename = secure_filename(imagen2.filename)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S%f')
+            unique_id = secrets.token_hex(4)
+            extension = os.path.splitext(original_filename)[1]
+            unique_filename = f"{timestamp}_{unique_id}{extension}"
+            
+            app.logger.info(f"Procesando imagen 2 para actualización: {unique_filename}")
+            
+            # Guardar temporalmente el archivo
+            temp_path = os.path.join(app.config["UPLOAD_FOLDER"], unique_filename)
+            imagen2.save(temp_path)
+            
+            try:
+                # Subir a S3 con nuestra función mejorada que verifica la subida y elimina archivos locales
+                if upload_file_to_s3(temp_path, unique_filename, delete_local=True):
+                    # Si la carga a S3 es exitosa, guardamos la referencia a S3
+                    s3_url = f"s3://{S3_BUCKET_NAME}/{unique_filename}"
+                    rutas_imagenes[1] = s3_url
+                    app.logger.info(f"Imagen 2 subida exitosamente a S3: {s3_url}")
+                else:
+                    app.logger.error(f"Falló la subida a S3 para imagen 2: {unique_filename}")
+                    # No almacenamos la imagen localmente, solo registramos el error
+            except Exception as e:
+                app.logger.error(f"Error al procesar imagen 2: {str(e)}")
+                # Asegurar que el archivo temporal se elimina incluso si hay error
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    app.logger.info(f"Archivo temporal eliminado: {temp_path}")
+            
+        # Imagen 3
+        # Imagen 3
+        imagen3 = request.files.get("imagen3")
+        if imagen3 and imagen3.filename and allowed_file(imagen3.filename):
+            # Generar un nombre único con timestamp y uuid para evitar colisiones
+            original_filename = secure_filename(imagen3.filename)
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S%f')
+            unique_id = secrets.token_hex(4)
+            extension = os.path.splitext(original_filename)[1]
+            unique_filename = f"{timestamp}_{unique_id}{extension}"
+            
+            app.logger.info(f"Procesando imagen 3 para actualización: {unique_filename}")
+            
+            # Guardar temporalmente el archivo
+            temp_path = os.path.join(app.config["UPLOAD_FOLDER"], unique_filename)
+            imagen3.save(temp_path)
+            
+            try:
+                # Subir a S3 con nuestra función mejorada que verifica la subida y elimina archivos locales
+                if upload_file_to_s3(temp_path, unique_filename, delete_local=True):
+                    # Si la carga a S3 es exitosa, guardamos la referencia a S3
+                    s3_url = f"s3://{S3_BUCKET_NAME}/{unique_filename}"
+                    rutas_imagenes[2] = s3_url
+                    app.logger.info(f"Imagen 3 subida exitosamente a S3: {s3_url}")
+                else:
+                    app.logger.error(f"Falló la subida a S3 para imagen 3: {unique_filename}")
+                    # No almacenamos la imagen localmente, solo registramos el error
+            except Exception as e:
+                app.logger.error(f"Error al procesar imagen 3: {str(e)}")
+                # Asegurar que el archivo temporal se elimina incluso si hay error
+                if os.path.exists(temp_path):
+                    os.remove(temp_path)
+                    app.logger.info(f"Archivo temporal eliminado: {temp_path}")
         # Manejar eliminación de imágenes
         for i in range(3):
             if request.form.get(f"remove_img{i+1}") == "on":
+                # Eliminar físicamente el archivo antes de actualizar la ruta en la base de datos
+                ruta_actual = rutas_imagenes[i]
+                if ruta_actual:  # Solo intentar eliminar si hay una imagen
+                    eliminar_archivo_imagen(ruta_actual)
                 rutas_imagenes[i] = None
-
         update_data["Imagenes"] = rutas_imagenes
-
         # Actualizar en MongoDB usando replace_one en lugar de update_one
-        result = catalog_collection.replace_one(
-            {id_field: id, "table": selected_table},
-            update_data
-        )
+        # Usar el mismo criterio por el que se encontró el registro originalmente
+        if encontrado_por_numero:
+            # Si se encontró por "Número", actualizamos usando ese campo
+            result = catalog_collection.replace_one(
+                {"Número": int(id), "table": selected_table},
+                update_data
+            )
+        else:
+            # Si se encontró por safe_id_field, actualizamos usando ese campo
+            result = catalog_collection.replace_one(
+                {safe_id_field: id, "table": selected_table},
+                update_data
+            )
 
         if result.modified_count > 0:
             flash("Registro actualizado exitosamente.", "success")
@@ -596,10 +1014,25 @@ def descargar_excel():
         for row in data:
             for ruta in row["imagenes"]:
                 if ruta:
-                    absolute_path = os.path.join(app.root_path, ruta)
-                    if os.path.exists(absolute_path):
-                        image_paths.add(absolute_path)
-        for img_path in image_paths:
+                    if ruta.startswith('s3://'):
+                        # Para imágenes en S3, intentar descargarlas al archivo temporal para incluirlas en el ZIP
+                        try:
+                            s3_parts = ruta[5:].split('/', 1)
+                            if len(s3_parts) == 2:
+                                bucket_name, object_key = s3_parts
+                                if bucket_name == S3_BUCKET_NAME:
+                                    filename = os.path.basename(object_key)
+                                    temp_download_path = os.path.join(tempfile.gettempdir(), filename)
+                                    s3_client.download_file(S3_BUCKET_NAME, object_key, temp_download_path)
+                                    # Agregar la ruta temporal a la lista de imágenes para incluir en el ZIP
+                                    image_paths.add(temp_download_path)
+                        except Exception as e:
+                            print(f"Error al descargar imagen de S3: {str(e)}")
+                    else:
+                        # Comportamiento anterior para archivos locales
+                        absolute_path = os.path.join(app.root_path, ruta)
+                        if os.path.exists(absolute_path):
+                            image_paths.add(absolute_path)
             arcname = os.path.join("imagenes", os.path.basename(img_path))
             zf.write(img_path, arcname=arcname)
     return send_from_directory(directory=os.path.dirname(temp_zip.name),
@@ -611,6 +1044,16 @@ from flask import send_from_directory
 
 @app.route("/imagenes_subidas/<filename>")
 def uploaded_images(filename):
+    # Verificar si se trata de una solicitud a un archivo almacenado en S3
+    s3_param = request.args.get('s3')
+    if s3_param == 'true':
+        # Generar una URL prefirmada para acceder al objeto en S3
+        url = get_s3_url(filename)
+        if url:
+            return redirect(url)
+        return "Error al acceder al archivo", 404
+    
+    # Si no es un archivo S3, servir desde el sistema de archivos local
     return send_from_directory(app.config["UPLOAD_FOLDER"], filename)
 
 from bson import ObjectId
@@ -623,22 +1066,22 @@ def convertir_registros(registros):
 
 @app.route("/debug_mongo")
 def debug_mongo():
-    print("📌 Verificando conexión con MongoDB en Flask")
+    print("\U0001F4CC Verificando conexión con MongoDB en Flask")
 
     colecciones = db.list_collection_names()
-    print("📌 Colecciones disponibles en MongoDB:", colecciones)
+    print("\U0001F4CC Colecciones disponibles en MongoDB:", colecciones)
 
+    # Obtener documentos pero solo mostrar el conteo
     documentos = list(catalog_collection.find())
-
-    print("📌 Documentos en la colección correcta:")
+    print(f"\U0001F4CC Total de documentos en la colección: {len(documentos)}")
+    
+    # Convertir ObjectId a string para poder serializar a JSON
     for doc in documentos:
-        print(doc)
+        if "_id" in doc and isinstance(doc["_id"], ObjectId):
+            doc["_id"] = str(doc["_id"])
 
-    # Convertir ObjectId a string para evitar error de serialización
-    for doc in documentos:
-        doc["_id"] = str(doc["_id"])
-
-    return {"colecciones": colecciones, "documentos": documentos}
+    # Solo devolver las colecciones y el conteo para evitar respuestas extensas
+    return {"colecciones": colecciones, "total_documentos": len(documentos)}
 
 @app.route("/insert_test")
 def insert_test():
@@ -655,5 +1098,39 @@ def insert_test():
 # -------------------------------------------
 # MAIN
 # -------------------------------------------
+def renumerar_registros(table_name):
+    """Renumera todos los registros de una tabla específica en orden secuencial"""
+    # Obtener todos los registros ordenados por el campo Número
+    registros = list(catalog_collection.find({"table": table_name}).sort("Número", 1))
+    
+    # Renumerar secuencialmente
+    for i, registro in enumerate(registros, 1):
+        # Solo actualizar si el número ha cambiado
+        if registro.get("Número") != i:
+            catalog_collection.update_one(
+@app.route("/renumerar/<table_name>")
+def renumerar(table_name):
+    """Renumera los registros de una tabla específica y redirecciona al catálogo"""
+    if "usuario" not in session:
+        return redirect(url_for("welcome"))
+    
+    try:
+        total = renumerar_registros(table_name)
+        flash(f"Se han renumerado {total} registros correctamente.", "success")
+    except Exception as e:
+        flash(f"Error al renumerar registros: {str(e)}", "error")
+    
+    # Establecer la tabla seleccionada para la redirección
+    session["selected_table"] = table_name
+    return redirect(url_for("catalog"))
+
+
+                {"_id": registro["_id"]},
+                {"$set": {"Número": i}}
+            )
+    
+    return len(registros)
+
+
 if __name__ == "__main__":
     app.run(debug=True)

@@ -4,3 +4,4 @@
 
 # Ignore large files
 unused_images_backup.tar.gz
+*.log

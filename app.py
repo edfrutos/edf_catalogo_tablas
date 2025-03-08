@@ -1,6 +1,8 @@
 import os
 import certifi
 import secrets
+
+# Función auxiliar para detectar números flotantes\ndef is_float(value):\n    try:\n        float(value)\n        return True\n    except (ValueError, TypeError):\n        return False
 from datetime import datetime, timedelta
 import tempfile
 import zipfile
@@ -47,6 +49,8 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from pymongo import MongoClient
 from flask_mail import Mail, Message
 from bson import ObjectId
+import logging
+logging.basicConfig(filename="/var/www/vhosts/edefrutos2025.xyz/httpdocs/flask_app.log", level=logging.DEBUG, format="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 
 # Forzar el uso del bundle de certificados de certifi
 os.environ['SSL_CERT_FILE'] = certifi.where()
@@ -483,79 +487,128 @@ def home():
 
 @app.route("/tables", methods=["GET", "POST"])
 def tables():
-    if "usuario" not in session:
-        return redirect(url_for("login"))
+    try:
+        if "usuario" not in session:
+            return redirect(url_for("login"))
 
-    owner = session["usuario"]
+        owner = session["usuario"]
 
-    if request.method == "POST":
-        table_name = request.form.get("table_name", "").strip()
-        import_file = request.files.get("import_table")
+        if request.method == "POST":
+            try:
+                table_name = request.form.get("table_name", "").strip()
+                import_file = request.files.get("import_table")
 
-        if import_file and import_file.filename != "":
-            # Importar el Excel
-            filename = secure_filename(import_file.filename)
-            filepath = os.path.join(SPREADSHEET_FOLDER, filename)
-            import_file.save(filepath)
-            
-            # Leer los encabezados del Excel importado
-            wb = openpyxl.load_workbook(filepath)
-            hoja = wb.active
-            headers = next(hoja.iter_rows(min_row=1, max_row=1, values_only=True))
-            wb.close()
-            
-            # Verificar que los encabezados no estén vacíos
-            if not headers or all(header is None for header in headers):
-                flash("El archivo Excel importado no contiene encabezados válidos.", "error")
+                if import_file and import_file.filename != "":
+                    try:
+                        # Importar el Excel
+                        filename = secure_filename(import_file.filename)
+                        filepath = os.path.join(SPREADSHEET_FOLDER, filename)
+                        import_file.save(filepath)
+                        
+                        try:
+                            # Leer los encabezados del Excel importado
+                            wb = openpyxl.load_workbook(filepath)
+                            hoja = wb.active
+                            headers = next(hoja.iter_rows(min_row=1, max_row=1, values_only=True))
+                            wb.close()
+                        except Exception as e:
+                            app.logger.error(f"Error al leer el archivo Excel: {str(e)}")
+                            flash("Error al leer el archivo Excel. Verifique que el formato sea correcto.", "error")
+                            return redirect(url_for("tables"))
+                        
+                        # Verificar que los encabezados no estén vacíos
+                        if not headers or all(header is None for header in headers):
+                            flash("El archivo Excel importado no contiene encabezados válidos.", "error")
+                            return redirect(url_for("tables"))
+
+                        try:
+                            # Guardar info en MongoDB
+                            spreadsheets_collection.insert_one({
+                                "owner": owner,
+                                "name": table_name,
+                                "filename": filename,
+                                "headers": headers,
+                                "created_at": datetime.utcnow()
+                            })
+                        except Exception as e:
+                            app.logger.error(f"Error al guardar en MongoDB: {str(e)}")
+                            flash("Error al guardar la información de la tabla en la base de datos.", "error")
+                            return redirect(url_for("tables"))
+                    except Exception as e:
+                        app.logger.error(f"Error al guardar el archivo subido: {str(e)}")
+                        flash("Error al procesar el archivo subido. Inténtelo de nuevo.", "error")
+                        return redirect(url_for("tables"))
+                else:
+                    try:
+                        # Caso en que no sube archivo (creas uno nuevo con encabezados)
+                        headers_str = request.form.get("table_headers", "").strip()
+                        if not headers_str:
+                            headers = ["Número", "Descripción", "Peso", "Valor"]  # Por defecto
+                        else:
+                            headers = [h.strip() for h in headers_str.split(",") if h.strip()]
+
+                        # Verificar que los encabezados no estén vacíos
+                        if not headers:
+                            flash("Debe proporcionar al menos un encabezado válido.", "error")
+                            return redirect(url_for("tables"))
+                        
+                        file_id = secrets.token_hex(8)
+                        filename = f"table_{file_id}.xlsx"
+                        filepath = os.path.join(SPREADSHEET_FOLDER, filename)
+                        
+                        try:
+                            wb = Workbook()
+                            hoja = wb.active
+                            hoja.append(headers)
+                            wb.save(filepath)
+                            wb.close()
+                        except Exception as e:
+                            app.logger.error(f"Error al crear el archivo Excel: {str(e)}")
+                            flash("Error al crear el archivo Excel. Inténtelo de nuevo.", "error")
+                            return redirect(url_for("tables"))
+
+                        try:
+                            # Guardar info en MongoDB
+                            spreadsheets_collection.insert_one({
+                                "owner": owner,
+                                "name": table_name,
+                                "filename": filename,
+                                "headers": headers,
+                                "created_at": datetime.utcnow()
+                            })
+                        except Exception as e:
+                            app.logger.error(f"Error al guardar en MongoDB: {str(e)}")
+                            flash("Error al guardar la información de la tabla en la base de datos.", "error")
+                            return redirect(url_for("tables"))
+                    except Exception as e:
+                        app.logger.error(f"Error al crear nueva tabla: {str(e)}")
+                        flash("Error al crear la nueva tabla. Inténtelo de nuevo.", "error")
+                        return redirect(url_for("tables"))
+                
+                try:
+                    # Almacenar los encabezados en la sesión para su uso posterior
+                    session["selected_headers"] = headers
+                except Exception as e:
+                    app.logger.warning(f"Error al guardar encabezados en sesión: {str(e)}")
+                    # No es crítico, continuamos
+                return redirect(url_for("tables"))
+            except Exception as e:
+                app.logger.error(f"Error general en el procesamiento POST de tablas: {str(e)}")
+                flash("Error al procesar la solicitud. Inténtelo de nuevo.", "error")
                 return redirect(url_for("tables"))
 
-            # Guardar info en MongoDB
-            spreadsheets_collection.insert_one({
-                "owner": owner,
-                "name": table_name,
-                "filename": filename,
-                "headers": headers,
-                "created_at": datetime.utcnow()
-            })
-        else:
-            # Caso en que no sube archivo (creas uno nuevo con encabezados)
-            headers_str = request.form.get("table_headers", "").strip()
-            if not headers_str:
-                headers = ["Número", "Descripción", "Peso", "Valor"]  # Por defecto
-            else:
-                headers = [h.strip() for h in headers_str.split(",") if h.strip()]
-
-            # Verificar que los encabezados no estén vacíos
-            if not headers:
-                flash("Debe proporcionar al menos un encabezado válido.", "error")
-                return redirect(url_for("tables"))
-            
-            file_id = secrets.token_hex(8)
-            filename = f"table_{file_id}.xlsx"
-            filepath = os.path.join(SPREADSHEET_FOLDER, filename)
-            
-            wb = Workbook()
-            hoja = wb.active
-            hoja.append(headers)
-            wb.save(filepath)
-            wb.close()
-
-            # Guardar info en MongoDB
-            spreadsheets_collection.insert_one({
-                "owner": owner,
-                "name": table_name,
-                "filename": filename,
-                "headers": headers,
-                "created_at": datetime.utcnow()
-            })
-        
-        # Almacenar los encabezados en la sesión para su uso posterior
-        session["selected_headers"] = headers
-        return redirect(url_for("tables"))
-
-    # GET: mostrar las tablas existentes
-    todas_las_tablas = list(spreadsheets_collection.find({"owner": session["usuario"]}))
-    return render_template("tables.html", tables=todas_las_tablas)
+        try:
+            # GET: mostrar las tablas existentes
+            todas_las_tablas = list(spreadsheets_collection.find({"owner": session["usuario"]}))
+            return render_template("tables.html", tables=todas_las_tablas)
+        except Exception as e:
+            app.logger.error(f"Error al consultar tablas en MongoDB: {str(e)}")
+            flash("Error al cargar las tablas. Inténtelo de nuevo más tarde.", "error")
+            return render_template("tables.html", tables=[])
+    except Exception as e:
+        app.logger.error(f"Error crítico en la función tables(): {str(e)}")
+        flash("Ha ocurrido un error inesperado. Por favor, inténtelo de nuevo.", "error")
+        return redirect(url_for("welcome"))
 
 @app.route("/select_table/<table_id>")
 def select_table(table_id):
@@ -604,7 +657,13 @@ def catalog():
     session["selected_headers"] = headers
 
     # Obtener registros de MongoDB para la tabla seleccionada
-    registros = list(catalog_collection.find({"table": selected_table}))
+    # Asegurarse de que el campo "Número" es entero antes de ordenar
+    pipeline = [
+        {"$match": {"table": selected_table}},
+        {"$addFields": {"NumeroOrdenacion": {"$toInt": {"$ifNull": [{"$toInt": "$Número"}, "$Número"]}}}},
+        {"$sort": {"NumeroOrdenacion": 1}}
+    ]
+    registros = list(catalog_collection.aggregate(pipeline))
 
     if request.method == "POST":
         form_data = {k.strip(): v.strip() for k, v in request.form.items()}
@@ -749,6 +808,8 @@ def editar(id):
             result = catalog_collection.delete_one({safe_id_field: id, "table": selected_table})
             
         if result.deleted_count > 0:
+            # Renumerar registros para evitar huecos en la numeración
+            renumerar_registros(selected_table)
             flash("Registro y sus imágenes eliminados exitosamente.", "success")
         else:
             flash("No se pudo eliminar el registro.", "error")
@@ -1037,5 +1098,39 @@ def insert_test():
 # -------------------------------------------
 # MAIN
 # -------------------------------------------
+# ... código existente ... (mantenemos todo hasta la función renumerar_registros)
+def renumerar_registros(table_name):
+    """Renumera todos los registros de una tabla específica en orden secuencial"""
+    # Obtener todos los registros ordenados por el campo Número
+    registros = list(catalog_collection.find({"table": table_name}).sort("Número", 1))
+    
+    # Renumerar secuencialmente
+    for i, registro in enumerate(registros, 1):
+        # Solo actualizar si el número ha cambiado
+        if registro.get("Número") != i:
+            catalog_collection.update_one(
+                {"_id": registro["_id"]},
+                {"$set": {"Número": i}}
+            )
+    
+    return len(registros)
+
+@app.route("/renumerar/<table_name>")
+def renumerar(table_name):
+    """Renumera los registros de una tabla específica y redirecciona al catálogo"""
+    if "usuario" not in session:
+        return redirect(url_for("welcome"))
+    
+    try:
+        total = renumerar_registros(table_name)
+        flash(f"Se han renumerado {total} registros correctamente.", "success")
+    except Exception as e:
+        flash(f"Error al renumerar registros: {str(e)}", "error")
+    
+    # Establecer la tabla seleccionada para la redirección
+    session["selected_table"] = table_name
+    return redirect(url_for("catalog"))
+
+
 if __name__ == "__main__":
     app.run(debug=True)

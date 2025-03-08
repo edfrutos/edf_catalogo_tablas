@@ -1,0 +1,36 @@
+# ... código existente ... (mantenemos todo hasta la función renumerar_registros)
+def renumerar_registros(table_name):
+    """Renumera todos los registros de una tabla específica en orden secuencial"""
+    # Obtener todos los registros ordenados por el campo Número
+    registros = list(catalog_collection.find({"table": table_name}).sort("Número", 1))
+    
+    # Renumerar secuencialmente
+    for i, registro in enumerate(registros, 1):
+        # Solo actualizar si el número ha cambiado
+        if registro.get("Número") != i:
+            catalog_collection.update_one(
+                {"_id": registro["_id"]},
+                {"$set": {"Número": i}}
+            )
+    
+    return len(registros)
+
+@app.route("/renumerar/<table_name>")
+def renumerar(table_name):
+    """Renumera los registros de una tabla específica y redirecciona al catálogo"""
+    if "usuario" not in session:
+        return redirect(url_for("welcome"))
+    
+    try:
+        total = renumerar_registros(table_name)
+        flash(f"Se han renumerado {total} registros correctamente.", "success")
+    except Exception as e:
+        flash(f"Error al renumerar registros: {str(e)}", "error")
+    
+    # Establecer la tabla seleccionada para la redirección
+    session["selected_table"] = table_name
+    return redirect(url_for("catalog"))
+
+
+if __name__ == "__main__":
+    app.run(debug=True)
